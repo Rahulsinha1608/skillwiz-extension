@@ -468,11 +468,6 @@ async function getChatGPTAnswerFullAutomation(questionData) {
 
               log('Answer received from ChatGPT, closing ChatGPT tab and switching back...');
 
-              // Close ChatGPT tab via background
-              chrome.runtime.sendMessage({ type: 'CLOSE_TAB', tabId: chatgptTabId }, () => {
-                log('ChatGPT tab closed');
-              });
-
               // Switch back to Skillwiz tab via background
               chrome.runtime.sendMessage({ type: 'SWITCH_TO_TAB', tabId: skillwizTabId }, () => {
                 log('Switched back to Skillwiz tab');
@@ -489,8 +484,7 @@ async function getChatGPTAnswerFullAutomation(questionData) {
               clearInterval(checkInterval);
               log('ChatGPT answer timeout', true);
 
-              // Close ChatGPT tab and switch back
-              chrome.runtime.sendMessage({ type: 'CLOSE_TAB', tabId: chatgptTabId }, () => {});
+              // Switch back
               chrome.runtime.sendMessage({ type: 'SWITCH_TO_TAB', tabId: skillwizTabId }, () => {});
 
               resolve(null);
@@ -509,46 +503,72 @@ async function markAnswerAndSubmit(selectedOption, settings) {
   
   // Click the checkbox to select the answer
   log('Clicking the selected option...');
-  await safeClick(selectedOption.element, settings.stepDelay || 300);
+  const checkbox = selectedOption.element;
+  
+  // Use JavaScript to directly set the checked property
+  if (checkbox) {
+    checkbox.checked = true;
+    // Trigger change event to ensure page registers the selection
+    checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+    checkbox.dispatchEvent(new Event('input', { bubbles: true }));
+    log('Checkbox checked and events triggered');
+  }
+  
+  await safeClick(checkbox, settings.stepDelay || 300);
 
   // Wait for the page to register the selection
   await new Promise(r => setTimeout(r, settings.stepDelay || 800));
 
   // Find and click the Check Answer button
   log('Looking for Check Answer button...');
-  const checkSelectors = [
-    'a.btn.btn-primary:not(:disabled)',
-    'button.btn-primary:not(:disabled)',
-    'a.btn-primary:not(:disabled)',
-    'button[type="submit"]:not(:disabled)',
-    '[data-testid="check-answer"]',
-    'button:not(:disabled)',
-    'a.btn:not(:disabled)',
-  ];
-
-  let checkBtn = findElement(checkSelectors);
   
-  if (!checkBtn) {
-    log('Check Answer button not found with selectors, searching by text...');
-    // Try to find any button that looks like a submit button
-    const allButtons = Array.from(document.querySelectorAll('button, a, [role="button"]'))
-      .filter(b => b.offsetParent !== null);
-    
-    for (const btn of allButtons) {
-      const text = (btn.textContent || btn.innerText || '').toLowerCase();
-      // Look for check answer button specifically
-      if (text.includes('check') && (text.includes('answer') || text === 'check')) {
+  let checkBtn = null;
+  
+  // Strategy 1: Look for buttons by text content (most reliable)
+  const allButtons = Array.from(document.querySelectorAll('button, a, [role="button"]'))
+    .filter(b => b.offsetParent !== null);
+  
+  for (const btn of allButtons) {
+    const text = (btn.textContent || btn.innerText || '').toLowerCase().trim();
+    // Look for check answer button specifically
+    if (text.includes('check') || text === 'check answer' || text === 'verify' || text.includes('submit')) {
+      // Make sure it's not disabled
+      if (!btn.disabled && !btn.classList.contains('disabled')) {
         checkBtn = btn;
-        log(`Found Check Answer button with text: "${text.trim()}"`);
+        log(`Found Check Answer button with text: "${text}"`);
         break;
       }
     }
+  }
+
+  // Strategy 2: Try common selectors
+  if (!checkBtn) {
+    const checkSelectors = [
+      'a.btn.btn-primary:not(:disabled)',
+      'button.btn-primary:not(:disabled)',
+      'a.btn-primary:not(:disabled)',
+      'button[type="submit"]:not(:disabled)',
+      '[data-testid="check-answer"]',
+      'button.btn-success:not(:disabled)',
+      'a.btn-success:not(:disabled)',
+    ];
+    checkBtn = findElement(checkSelectors);
   }
 
   if (checkBtn) {
     log('Clicking Check Answer button...');
     await safeClick(checkBtn, settings.stepDelay || 400);
     log('Answer submitted successfully');
+    
+    // Wait for the page to process the answer and show next button
+    await new Promise(r => setTimeout(r, settings.stepDelay || 1500));
+    
+    // Look for Save/Next button after submission
+    const saveNextBtn = await findSaveNextButton(settings.stepDelay || 800);
+    if (saveNextBtn) {
+      log('Found Save/Next button, clicking...');
+      await safeClick(saveNextBtn, 200);
+    }
   } else {
     log('Check Answer button not found - quiz may auto-submit', true);
   }
@@ -556,6 +576,26 @@ async function markAnswerAndSubmit(selectedOption, settings) {
   // Wait then disable prevention to allow normal navigation
   await new Promise(r => setTimeout(r, settings.stepDelay || 2000));
   preventNavigation = false;
+}
+
+// ── Find Save/Next button ─────────────────────────────────
+async function findSaveNextButton(delay = 0) {
+  await new Promise(r => setTimeout(r, delay));
+  
+  const allButtons = Array.from(document.querySelectorAll('button, a, [role="button"]'))
+    .filter(b => b.offsetParent !== null);
+  
+  for (const btn of allButtons) {
+    const text = (btn.textContent || btn.innerText || '').toLowerCase().trim();
+    if (text.includes('save') || text.includes('next') || text.includes('continue')) {
+      if (!btn.disabled && !btn.classList.contains('disabled')) {
+        log(`Found Save/Next button with text: "${text}"`);
+        return btn;
+      }
+    }
+  }
+  
+  return null;
 }
 
 // ── Click next lesson button ───────────────────────────────
