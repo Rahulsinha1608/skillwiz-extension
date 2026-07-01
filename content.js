@@ -1,0 +1,746 @@
+// ============================================================
+//  Skillwiz Autopilot — content.js
+//  Automates Skillwiz courses with intelligent AI answering
+// ============================================================
+
+console.log('═══════════════════════════════════════════════════════════');
+console.log('✓ CONTENT.JS LOADED');
+console.log('═══════════════════════════════════════════════════════════');
+
+// Prevent script re-injection
+if (window.SKILLWIZ_AUTOPILOT_LOADED) {
+  console.log('[Skillwiz Autopilot] Already loaded, skipping re-injection');
+  throw new Error('Script already injected');
+}
+window.SKILLWIZ_AUTOPILOT_LOADED = true;
+
+let observer = null;
+let autopilotActive = false;
+let autopilotSettings = {};
+let isRunning = false;
+let lastRunTime = 0;
+
+// ── Navigation prevention ──────────────────────────────────
+let preventNavigation = false;
+
+// Prevent default form submissions when autopilot is active
+document.addEventListener('submit', (e) => {
+  if (autopilotActive && preventNavigation) {
+    e.preventDefault();
+    e.stopPropagation();
+    log('Blocked form submission');
+  }
+}, true);
+
+// Intercept link clicks that might navigate away during quiz
+document.addEventListener('click', (e) => {
+  if (!autopilotActive) return;
+  
+  const target = e.target.closest('a, button, [role="button"]');
+  if (!target) return;
+  
+  const href = target.getAttribute('href');
+  const text = (target.textContent || '').toLowerCase();
+  
+  // Don't block "Next" or "Continue" buttons
+  if (text.includes('next') || text.includes('continue') || text.includes('proceed')) {
+    return;
+  }
+  
+  // Block navigation links during quiz
+  if (href && (href.includes('home') || href.includes('course') || href.includes('dashboard'))) {
+    if (preventNavigation) {
+      e.preventDefault();
+      e.stopPropagation();
+      log('Blocked navigation link during quiz');
+    }
+  }
+}, true);
+
+// ── Element finding helpers ────────────────────────────────
+function findElement(selectors) {
+  for (const sel of selectors) {
+    try {
+      const el = document.querySelector(sel);
+      if (el && typeof el.offsetParent !== 'undefined') {
+        return el;
+      }
+    } catch (_) {}
+  }
+  return null;
+}
+
+function findAllElements(selectors) {
+  for (const sel of selectors) {
+    try {
+      const els = document.querySelectorAll(sel);
+      if (els && els.length > 0) {
+        return Array.from(els).filter(el => el.offsetParent !== null);
+      }
+    } catch (_) {}
+  }
+  return [];
+}
+
+function log(msg, isErr = false) {
+  const prefix = isErr ? '[Skillwiz Autopilot ERROR]' : '[Skillwiz Autopilot]';
+  console.log(prefix, msg);
+}
+
+// ── Extract question and options ───────────────────────────
+function extractQuestion() {
+  let questionText = '';
+  let options = [];
+
+  // Debug: Log all visible text on the page to help identify selectors
+  const allText = document.body.innerText;
+  log(`Page has ${allText.length} characters of text`);
+
+  // Try to get question text from various selectors - expanded list
+  const questionSelectors = [
+    '.question-text',
+    '.question-item',
+    '.question-header',
+    '[class*="questionText"]',
+    '[class*="QuestionText"]',
+    'mathjax-renderer',
+    '[data-testid="question-text"]',
+    '.MCQ-question',
+    '.quiz-title',
+    '.slide-title',
+    '[role="heading"]',
+    'h1, h2, h3, h4',
+    '.content-header',
+    '.lesson-title',
+  ];
+
+  for (const sel of questionSelectors) {
+    try {
+      const els = document.querySelectorAll(sel);
+      for (const el of els) {
+        if (el.offsetParent !== null) {
+          const text = el.innerText?.trim() || el.textContent?.trim() || '';
+          if (text && text.length > 10 && text.length < 500) {
+            questionText = text;
+            log(`Found question: "${text.slice(0, 60)}..."`);
+            break;
+          }
+        }
+      }
+      if (questionText) break;
+    } catch (_) {}
+  }
+
+  // Get all answer options - find checkboxes and their associated text
+  const checkboxes = Array.from(document.querySelectorAll('input[type="checkbox"]:not(:disabled)'));
+  
+  if (checkboxes.length === 0) {
+    log('No checkboxes found on page');
+    return null;
+  }
+
+  log(`Found ${checkboxes.length} checkboxes`);
+
+  checkboxes.forEach((checkbox, idx) => {
+    let answerText = '';
+
+    // Skillwiz structure: checkbox is in <label>, answer text is in <span class="col answer-text">
+    // Within the same <div class="row mb-2"> container
+    
+    // Strategy 1: Look for span.col.answer-text in the same row
+    const rowContainer = checkbox.closest('.row.mb-2, .row, div.question-answers > div');
+    if (rowContainer) {
+      const answerSpan = rowContainer.querySelector('span.col.answer-text, span.answer-text');
+      if (answerSpan) {
+        // Get text from mathjax-renderer or fallback to direct text
+        const mathjax = answerSpan.querySelector('mathjax-renderer');
+        if (mathjax) {
+          answerText = mathjax.innerText?.trim() || mathjax.textContent?.trim() || '';
+        } else {
+          answerText = answerSpan.innerText?.trim() || answerSpan.textContent?.trim() || '';
+        }
+        
+        if (answerText) {
+          log(`Strategy 1 (Skillwiz span.answer-text): Option ${idx + 1}: "${answerText.slice(0, 40)}"`);
+        }
+      }
+    }
+
+    // Strategy 2: Look for label that wraps the checkbox
+    if (!answerText) {
+      const wrappingLabel = checkbox.closest('label');
+      if (wrappingLabel) {
+        const clone = wrappingLabel.cloneNode(true);
+        clone.querySelectorAll('input').forEach(el => el.remove());
+        answerText = clone.innerText?.trim() || clone.textContent?.trim() || '';
+        if (answerText) {
+          log(`Strategy 2 (wrapping label): Option ${idx + 1}: "${answerText.slice(0, 40)}"`);
+        }
+      }
+    }
+
+    // Strategy 3: Find next sibling span with text
+    if (!answerText) {
+      let sibling = checkbox.nextElementSibling;
+      let attempts = 0;
+      while (sibling && attempts < 3) {
+        const text = sibling.innerText?.trim() || sibling.textContent?.trim() || '';
+        if (text && text.length > 1 && !text.includes('☑') && !text.includes('☐')) {
+          answerText = text;
+          break;
+        }
+        sibling = sibling.nextElementSibling;
+        attempts++;
+      }
+      if (answerText) {
+        log(`Strategy 3 (next sibling): Option ${idx + 1}: "${answerText.slice(0, 40)}"`);
+      }
+    }
+
+    // Strategy 4: Get next sibling text nodes
+    if (!answerText) {
+      let sibling = checkbox.nextElementSibling;
+      let attempts = 0;
+      while (sibling && attempts < 3) {
+        const text = sibling.innerText?.trim() || sibling.textContent?.trim() || '';
+        if (text && text.length > 1) {
+          answerText = text;
+          break;
+        }
+        sibling = sibling.nextElementSibling;
+        attempts++;
+      }
+    }
+
+    // Strategy 4: Get parent's text content
+    if (!answerText && checkbox.parentElement) {
+      const parent = checkbox.parentElement;
+      const text = parent.innerText?.trim() || parent.textContent?.trim() || '';
+      if (text && text.length > 1) {
+        answerText = text;
+      }
+    }
+
+    // Clean up the text
+    if (answerText) {
+      answerText = answerText.replace(/\s+/g, ' ').trim();
+      // Remove checkbox-like characters
+      answerText = answerText.replace(/^[\s☐☑✓✗\[\]]+/, '').trim();
+    }
+
+    if (answerText && answerText.length > 0) {
+      options.push({
+        number: idx + 1,
+        text: answerText,
+        element: checkbox,
+      });
+      log(`Option ${idx + 1}: "${answerText.slice(0, 50)}..."`);
+    } else {
+      log(`Option ${idx + 1}: No text extracted`, true);
+    }
+  });
+
+  if (options.length === 0) {
+    log('No options extracted from checkboxes', true);
+    return null;
+  }
+
+  return {
+    question: questionText || 'Question text not found',
+    options: options,
+    fullQuestion: `${questionText || 'Question'}\n\nOptions:\n${options.map(o => `${o.number}. ${o.text}`).join('\n')}`,
+  };
+}
+
+// ── Safe click with scroll into view ───────────────────────
+async function safeClick(el, delay = 0, preventDefault = false) {
+  return new Promise((resolve) => {
+    setTimeout(async () => {
+      if (el && el.offsetParent !== null) {
+        try {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          await new Promise(r => setTimeout(r, 300));
+          
+          // Prevent default behavior if specified
+          if (preventDefault) {
+            const clickEvent = new MouseEvent('click', {
+              bubbles: true,
+              cancelable: true,
+              view: window
+            });
+            el.dispatchEvent(clickEvent);
+          } else {
+            el.click();
+          }
+          log(`Clicked: ${el.tagName}`);
+        } catch (e) {
+          log(`Click failed: ${e.message}`, true);
+        }
+      }
+      resolve();
+    }, delay);
+  });
+}
+
+// ── Parse answer from ChatGPT response ─────────────────────
+function parseAnswerFromResponse(response, optionCount) {
+  if (!response) return null;
+
+  // Handle numeric answers (from our parseAnswer function)
+  const num = parseInt(response);
+  if (!isNaN(num) && num >= 1 && num <= optionCount) {
+    return num;
+  }
+
+  // Handle text responses with patterns
+  const patterns = [
+    /(?:answer|option)\s*(?:is|:)?\s*(\d+)/i,
+    /^(\d+)[.\)\s]/m,
+  ];
+
+  for (const pattern of patterns) {
+    const match = response.match(pattern);
+    if (match) {
+      const parsedNum = parseInt(match[1]);
+      if (!isNaN(parsedNum) && parsedNum >= 1 && parsedNum <= optionCount) {
+        return parsedNum;
+      }
+    }
+  }
+
+  // If response is longer, try to find any number
+  if (response.length > 20) {
+    const numbers = response.match(/\b(\d+)\b/g);
+    if (numbers) {
+      for (const n of numbers) {
+        const num = parseInt(n);
+        if (num >= 1 && num <= optionCount) {
+          return num;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+// ── ChatGPT integration ───────────────────────────────────
+async function getChatGPTAnswer(question) {
+  log('Requesting answer from ChatGPT...');
+
+  return new Promise((resolve) => {
+    // Send message to background script to open ChatGPT and store question
+    chrome.runtime.sendMessage(
+      { type: 'SWITCH_TO_CHATGPT', question: question },
+      (response) => {
+        if (response?.success) {
+          log('ChatGPT tab opened with ID: ' + response.tabId);
+          log('Waiting for ChatGPT answer...');
+
+          // Wait for the answer to be extracted from ChatGPT
+          let attempts = 0;
+          const maxAttempts = 180; // 3 minutes timeout
+          
+          const checkInterval = setInterval(() => {
+            chrome.storage.local.get(['chatGPTAnswer'], (result) => {
+              if (result.chatGPTAnswer) {
+                clearInterval(checkInterval);
+                const answer = result.chatGPTAnswer;
+                chrome.storage.local.remove('chatGPTAnswer');
+                log('✓ Received answer from ChatGPT: ' + answer);
+                
+                // Switch back to Skillwiz tab
+                chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+                  if (tabs && tabs[0]) {
+                    chrome.tabs.update(tabs[0].id, { active: true });
+                    log('Switched back to Skillwiz tab');
+                  }
+                });
+                
+                resolve(answer);
+              }
+              attempts++;
+              if (attempts > maxAttempts) {
+                clearInterval(checkInterval);
+                log('ChatGPT answer timeout after ' + maxAttempts + ' attempts', true);
+                resolve(null);
+              }
+            });
+          }, 1000);
+        } else {
+          log('Failed to open ChatGPT tab: ' + (response?.error || 'Unknown error'), true);
+          resolve(null);
+        }
+      }
+    );
+  });
+}
+
+// ── Answer quiz questions with full ChatGPT automation ─────────────────────────────────
+async function answerQuiz() {
+  const questionData = extractQuestion();
+  if (!questionData || questionData.options.length === 0) {
+    log('No question or options found on page');
+    return false;
+  }
+
+  log(`Found ${questionData.options.length} answer options`);
+  log(`Question: "${questionData.question.slice(0, 50)}..."`);
+
+  let selectedOption = null;
+  const settings = autopilotSettings;
+
+  // Use ChatGPT for answering
+  if (settings.useChatGPT) {
+    log('Starting ChatGPT automation workflow...');
+    const answer = await getChatGPTAnswerFullAutomation(questionData);
+    if (answer) {
+      const answerNum = parseAnswerFromResponse(answer, questionData.options.length);
+      if (answerNum) {
+        selectedOption = questionData.options.find(o => o.number === answerNum);
+        log(`ChatGPT selected option ${answerNum}`);
+      }
+    }
+  }
+
+  // Fallback: use first option or random
+  if (!selectedOption) {
+    if (settings.randomizeAnswers) {
+      selectedOption = questionData.options[Math.floor(Math.random() * questionData.options.length)];
+      log(`Randomly selected option ${selectedOption.number}`);
+    } else {
+      selectedOption = questionData.options[0];
+      log('Using first option (no AI answer)');
+    }
+  }
+
+  // Mark the selected answer and submit
+  if (selectedOption && selectedOption.element) {
+    log(`Marking option ${selectedOption.number} as selected...`);
+    await markAnswerAndSubmit(selectedOption, settings);
+  }
+
+  return true;
+}
+
+// ── Full ChatGPT Automation: Open tab, send question, get answer, switch back ─────────────────────────────────
+async function getChatGPTAnswerFullAutomation(questionData) {
+  log('Opening ChatGPT tab with question...');
+
+  // Get current tab ID via background script
+  const skillwizTabId = await new Promise((resolve) => {
+    chrome.runtime.sendMessage({ type: 'GET_ACTIVE_TAB_ID' }, (response) => {
+      resolve(response?.tabId);
+    });
+  });
+
+  if (!skillwizTabId) {
+    log('Could not get Skillwiz tab ID', true);
+    return null;
+  }
+  log(`Current Skillwiz tab ID: ${skillwizTabId}`);
+
+  return new Promise((resolve) => {
+    // Store question in storage
+    chrome.storage.local.set({
+      pendingQuestion: questionData.fullQuestion,
+      skillwizTabId: skillwizTabId,
+      waitingForAnswer: true
+    }, () => {
+      // Open ChatGPT tab via background
+      chrome.runtime.sendMessage({ type: 'SWITCH_TO_CHATGPT', question: questionData.fullQuestion }, (response) => {
+        if (!response?.success) {
+          log('Failed to open ChatGPT tab: ' + (response?.error || 'Unknown error'), true);
+          resolve(null);
+          return;
+        }
+
+        const chatgptTabId = response.tabId;
+        log(`ChatGPT tab opened: ${chatgptTabId}`);
+
+        // Wait for answer with timeout
+        let attempts = 0;
+        const checkInterval = setInterval(() => {
+          chrome.storage.local.get(['chatGPTAnswer'], (result) => {
+            if (result.chatGPTAnswer) {
+              clearInterval(checkInterval);
+              const answer = result.chatGPTAnswer;
+
+              log('Answer received from ChatGPT, closing ChatGPT tab and switching back...');
+
+              // Close ChatGPT tab via background
+              chrome.runtime.sendMessage({ type: 'CLOSE_TAB', tabId: chatgptTabId }, () => {
+                log('ChatGPT tab closed');
+              });
+
+              // Switch back to Skillwiz tab via background
+              chrome.runtime.sendMessage({ type: 'SWITCH_TO_TAB', tabId: skillwizTabId }, () => {
+                log('Switched back to Skillwiz tab');
+              });
+
+              // Clean up storage
+              chrome.storage.local.remove(['chatGPTAnswer', 'pendingQuestion', 'skillwizTabId', 'waitingForAnswer']);
+
+              resolve(answer);
+            }
+
+            attempts++;
+            if (attempts > 180) { // 3 minutes timeout
+              clearInterval(checkInterval);
+              log('ChatGPT answer timeout', true);
+
+              // Close ChatGPT tab and switch back
+              chrome.runtime.sendMessage({ type: 'CLOSE_TAB', tabId: chatgptTabId }, () => {});
+              chrome.runtime.sendMessage({ type: 'SWITCH_TO_TAB', tabId: skillwizTabId }, () => {});
+
+              resolve(null);
+            }
+          });
+        }, 1000);
+      });
+    });
+  });
+}
+
+// ── Mark answer option and submit ─────────────────────────────────
+async function markAnswerAndSubmit(selectedOption, settings) {
+  // Enable navigation prevention
+  preventNavigation = true;
+  
+  // Click the checkbox to select the answer
+  log('Clicking the selected option...');
+  await safeClick(selectedOption.element, settings.stepDelay || 300);
+
+  // Wait for the page to register the selection
+  await new Promise(r => setTimeout(r, settings.stepDelay || 800));
+
+  // Find and click the Check Answer button
+  log('Looking for Check Answer button...');
+  const checkSelectors = [
+    'a.btn.btn-primary:not(:disabled)',
+    'button.btn-primary:not(:disabled)',
+    'a.btn-primary:not(:disabled)',
+    'button[type="submit"]:not(:disabled)',
+    '[data-testid="check-answer"]',
+    'button:not(:disabled)',
+    'a.btn:not(:disabled)',
+  ];
+
+  let checkBtn = findElement(checkSelectors);
+  
+  if (!checkBtn) {
+    log('Check Answer button not found with selectors, searching by text...');
+    // Try to find any button that looks like a submit button
+    const allButtons = Array.from(document.querySelectorAll('button, a, [role="button"]'))
+      .filter(b => b.offsetParent !== null);
+    
+    for (const btn of allButtons) {
+      const text = (btn.textContent || btn.innerText || '').toLowerCase();
+      // Look for check answer button specifically
+      if (text.includes('check') && (text.includes('answer') || text === 'check')) {
+        checkBtn = btn;
+        log(`Found Check Answer button with text: "${text.trim()}"`);
+        break;
+      }
+    }
+  }
+
+  if (checkBtn) {
+    log('Clicking Check Answer button...');
+    await safeClick(checkBtn, settings.stepDelay || 400);
+    log('Answer submitted successfully');
+  } else {
+    log('Check Answer button not found - quiz may auto-submit', true);
+  }
+  
+  // Wait then disable prevention to allow normal navigation
+  await new Promise(r => setTimeout(r, settings.stepDelay || 2000));
+  preventNavigation = false;
+}
+
+// ── Click next lesson button ───────────────────────────────
+async function clickNext() {
+  const nextSelectors = [
+    'a[aria-label*="Next" i]:not(:disabled)',
+    'button[aria-label*="Next" i]:not(:disabled)',
+    'a.btn-next:not(:disabled)',
+    'button.btn-next:not(:disabled)',
+    '[data-testid="next-button"]',
+    '.next-button',
+    'a[rel="next"]',
+    'button:contains("Next")',
+    '[class*="next"]:not(:disabled)',
+  ];
+
+  // Don't click next if we're in the middle of answering a quiz
+  const hasCheckboxes = document.querySelectorAll('input[type="checkbox"]:not(:disabled)').length > 0;
+  if (hasCheckboxes) {
+    log('Skipping next click - quiz still in progress');
+    return false;
+  }
+
+  const nextBtn = findElement(nextSelectors);
+  if (nextBtn) {
+    log('Clicking Next button...');
+    await safeClick(nextBtn, 500);
+    return true;
+  }
+
+  log('Next button not found');
+  return false;
+}
+
+// ── Click mark complete button ──────────────────────────────
+async function clickComplete() {
+  // Try multiple strategies to find the complete button
+  let completeBtn = null;
+
+  // Strategy 1: Look for buttons with complete-related text
+  const allButtons = Array.from(document.querySelectorAll('button, a, [role="button"]'));
+  for (const btn of allButtons) {
+    if (btn.offsetParent === null) continue; // Skip hidden elements
+    
+    const text = (btn.innerText || btn.textContent || '').toLowerCase();
+    if (text.includes('complete') || text.includes('finish') || text.includes('done')) {
+      completeBtn = btn;
+      log(`Found complete button with text: "${text}"`);
+      break;
+    }
+  }
+
+  // Strategy 2: Look for buttons with specific data attributes or classes
+  if (!completeBtn) {
+    const selectors = [
+      '[data-testid="complete-button"]',
+      '[data-testid="mark-complete"]',
+      '.complete-btn',
+      '.btn-complete',
+      '.finish-btn',
+      'button[class*="complete"]',
+      'button[class*="finish"]',
+      'a[class*="complete"]',
+    ];
+
+    for (const sel of selectors) {
+      try {
+        completeBtn = document.querySelector(sel);
+        if (completeBtn && completeBtn.offsetParent !== null) {
+          log(`Found complete button with selector: "${sel}"`);
+          break;
+        }
+      } catch (_) {}
+    }
+  }
+
+  // Strategy 3: Look for any button that appears at the end of the page
+  if (!completeBtn) {
+    const visibleButtons = allButtons.filter(btn => btn.offsetParent !== null);
+    if (visibleButtons.length > 0) {
+      const lastBtn = visibleButtons[visibleButtons.length - 1];
+      const text = (lastBtn.innerText || lastBtn.textContent || '').toLowerCase();
+      
+      // If the last button is not "next" and not a navigation button, try it
+      if (!text.includes('next') && !text.includes('previous') && !text.includes('back')) {
+        completeBtn = lastBtn;
+        log(`Using last visible button as complete: "${text}"`);
+      }
+    }
+  }
+
+  if (completeBtn) {
+    log('Clicking Complete button...');
+    await safeClick(completeBtn, 500);
+    return true;
+  }
+
+  log('Complete button not found');
+  return false;
+}
+
+// ── Main autopilot loop ───────────────────────────────────
+async function runAutopilot() {
+  const now = Date.now();
+  if (now - lastRunTime < 1000) return; // Rate limit
+  lastRunTime = now;
+
+  if (!autopilotActive || isRunning) return;
+  isRunning = true;
+
+  try {
+    const { autoQuiz, autoNext, markComplete, stepDelay } = autopilotSettings;
+
+    // Check if quiz is present
+    const hasQuiz = document.querySelectorAll('input[type="checkbox"]:not(:disabled)').length > 0;
+
+    // Handle quiz first
+    if (autoQuiz && hasQuiz) {
+      await answerQuiz();
+      await new Promise(r => setTimeout(r, stepDelay || 2000));
+    }
+
+    // Check if we're on a lesson complete page (no interactive content)
+    const isLessonEnd = !hasQuiz && !document.querySelector('video, audio');
+
+    if (autoNext && !hasQuiz) {
+      await clickNext();
+      await new Promise(r => setTimeout(r, stepDelay || 1500));
+    }
+
+    if (markComplete && isLessonEnd) {
+      await clickComplete();
+      await new Promise(r => setTimeout(r, stepDelay || 1000));
+    }
+  } catch (e) {
+    log(`Autopilot error: ${e.message}`, true);
+    console.error(e);
+  } finally {
+    isRunning = false;
+  }
+}
+
+// ── Start mutation observer ───────────────────────────────
+function startObserver() {
+  if (observer) observer.disconnect();
+  observer = new MutationObserver(() => {
+    if (autopilotActive && !isRunning) {
+      runAutopilot();
+    }
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+  log('Observer started');
+}
+
+// ── Message listener ───────────────────────────────────────
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  try {
+    if (msg.type === 'START_AUTOPILOT') {
+      autopilotActive = true;
+      autopilotSettings = msg.settings;
+      log('✓ AUTOPILOT STARTED');
+      startObserver();
+      runAutopilot();
+      sendResponse({ status: 'started' });
+    } else if (msg.type === 'STOP_AUTOPILOT') {
+      autopilotActive = false;
+      if (observer) observer.disconnect();
+      log('Autopilot stopped');
+      sendResponse({ status: 'stopped' });
+    } else if (msg.type === 'RUN_ONCE') {
+      autopilotSettings = msg.settings;
+      runAutopilot();
+      sendResponse({ status: 'ran_once' });
+    } else if (msg.type === 'GET_STATUS') {
+      sendResponse({ active: autopilotActive, settings: autopilotSettings });
+    }
+
+    return true;
+  } catch (e) {
+    console.error('ERROR IN MESSAGE LISTENER:', e);
+    sendResponse({ error: e.message });
+    return true;
+  }
+});
+
+console.log('═══════════════════════════════════════════════════════════');
+console.log('✓ Content script ready');
+console.log('═══════════════════════════════════════════════════════════');

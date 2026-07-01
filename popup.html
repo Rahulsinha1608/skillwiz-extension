@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Skillwiz Autopilot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0d0d0f;
+      --surface: #161619;
+      --surface2: #1e1e23;
+      --border: rgba(255,255,255,0.08);
+      --border-active: rgba(99,211,130,0.5);
+      --green: #63d382;
+      --green-dim: rgba(99,211,130,0.12);
+      --green-glow: rgba(99,211,130,0.25);
+      --amber: #f5c842;
+      --red: #ff5f5f;
+      --text: #f0f0f2;
+      --muted: #6b6b78;
+      --mono: 'Space Mono', monospace;
+      --sans: 'DM Sans', sans-serif;
+    }
+
+    body {
+      width: 320px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 14px;
+      overflow: hidden;
+    }
+
+    /* ── Header ── */
+    .header {
+      padding: 16px 18px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .logo {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    }
+
+    .logo-icon {
+      width: 28px;
+      height: 28px;
+      background: var(--green-dim);
+      border: 1px solid var(--border-active);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+    }
+
+    .logo-text {
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      color: var(--green);
+      text-transform: uppercase;
+    }
+
+    .logo-sub {
+      font-size: 10px;
+      color: var(--muted);
+      font-family: var(--mono);
+      margin-top: 1px;
+    }
+
+    .status-badge {
+      font-family: var(--mono);
+      font-size: 10px;
+      padding: 3px 8px;
+      border-radius: 20px;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      transition: all 0.3s;
+    }
+    .status-badge.off {
+      background: rgba(255,255,255,0.06);
+      color: var(--muted);
+    }
+    .status-badge.on {
+      background: var(--green-dim);
+      color: var(--green);
+      border: 1px solid var(--border-active);
+    }
+
+    .settings-icon {
+      cursor: pointer;
+      font-size: 18px;
+      padding: 4px 8px;
+      transition: transform 0.2s;
+    }
+    .settings-icon:hover { transform: rotate(20deg); }
+
+    /* ── Body ── */
+    .body { 
+      padding: 14px 18px;
+      max-height: 500px;
+      overflow-y: auto;
+    }
+
+    .section-label {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      margin-bottom: 10px;
+    }
+
+    /* ── Toggles ── */
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin-bottom: 6px;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    .toggle-row:hover { border-color: rgba(255,255,255,0.15); }
+    .toggle-row.active {
+      border-color: var(--border-active);
+      background: var(--green-dim);
+    }
+
+    .toggle-info { display: flex; align-items: center; gap: 10px; }
+
+    .toggle-icon {
+      width: 32px; height: 32px;
+      border-radius: 8px;
+      background: var(--surface2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 15px;
+      flex-shrink: 0;
+      transition: background 0.2s;
+    }
+    .toggle-row.active .toggle-icon {
+      background: rgba(99,211,130,0.15);
+    }
+
+    .toggle-name {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text);
+    }
+    .toggle-desc {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 1px;
+    }
+
+    .switch {
+      width: 34px; height: 18px;
+      border-radius: 9px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      position: relative;
+      flex-shrink: 0;
+      transition: background 0.2s, border-color 0.2s;
+    }
+    .switch::after {
+      content: '';
+      position: absolute;
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      background: var(--muted);
+      top: 2px; left: 2px;
+      transition: transform 0.2s, background 0.2s;
+    }
+    .toggle-row.active .switch {
+      background: var(--green);
+      border-color: var(--green);
+    }
+    .toggle-row.active .switch::after {
+      background: #fff;
+      transform: translateX(16px);
+    }
+
+    /* ── Divider ── */
+    .divider {
+      height: 1px;
+      background: var(--border);
+      margin: 14px 0;
+    }
+
+    /* ── Delay setting ── */
+    .delay-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+    }
+    .delay-label {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .delay-label span {
+      color: var(--text);
+      font-weight: 500;
+    }
+    .delay-slider {
+      width: 110px;
+      accent-color: var(--green);
+      cursor: pointer;
+    }
+    .delay-val {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--green);
+      min-width: 32px;
+      text-align: right;
+    }
+
+    /* ── Main button ── */
+    .main-btn {
+      width: 100%;
+      padding: 12px;
+      border-radius: 10px;
+      border: none;
+      font-family: var(--mono);
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: all 0.2s;
+      position: relative;
+      overflow: hidden;
+    }
+    .main-btn.start {
+      background: var(--green);
+      color: #0a1a0f;
+    }
+    .main-btn.start:hover {
+      background: #7ee89e;
+      box-shadow: 0 0 18px var(--green-glow);
+    }
+    .main-btn.stop {
+      background: rgba(255,95,95,0.12);
+      color: var(--red);
+      border: 1px solid rgba(255,95,95,0.3);
+    }
+    .main-btn.stop:hover {
+      background: rgba(255,95,95,0.2);
+    }
+    .main-btn:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+
+    /* ── Run once ── */
+    .run-once-btn {
+      width: 100%;
+      margin-top: 6px;
+      padding: 9px;
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.04em;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .run-once-btn:hover {
+      border-color: rgba(255,255,255,0.2);
+      color: var(--text);
+    }
+
+    /* ── Settings Panel ── */
+    .settings-panel {
+      display: none;
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.7);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+    }
+    .settings-panel.visible {
+      display: flex;
+    }
+
+    .settings-content {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      max-width: 400px;
+      max-height: 80vh;
+      overflow-y: auto;
+      box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+    }
+
+    .settings-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+
+    .settings-title {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .close-settings {
+      background: none;
+      border: none;
+      color: var(--muted);
+      font-size: 24px;
+      cursor: pointer;
+      transition: color 0.2s;
+    }
+    .close-settings:hover { color: var(--text); }
+
+    .settings-group {
+      margin-bottom: 20px;
+    }
+
+    .settings-group-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--green);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 12px;
+    }
+
+    .input-group {
+      margin-bottom: 12px;
+    }
+
+    .input-label {
+      display: block;
+      font-size: 12px;
+      color: var(--text);
+      margin-bottom: 6px;
+      font-weight: 500;
+    }
+
+    .input-text {
+      width: 100%;
+      padding: 10px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-family: var(--mono);
+      font-size: 12px;
+      transition: border-color 0.2s;
+    }
+    .input-text:focus {
+      outline: none;
+      border-color: var(--border-active);
+    }
+
+    /* ── Not on Skillwiz warning ── */
+    .warning {
+      display: none;
+      padding: 10px 12px;
+      background: rgba(245,200,66,0.08);
+      border: 1px solid rgba(245,200,66,0.25);
+      border-radius: 8px;
+      font-size: 11px;
+      color: var(--amber);
+      margin-bottom: 12px;
+      line-height: 1.5;
+    }
+    .warning.visible { display: block; }
+
+    /* ── Log area ── */
+    .log-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--muted);
+      height: 52px;
+      overflow-y: auto;
+      line-height: 1.6;
+      margin-top: 10px;
+    }
+    .log-box .entry { color: var(--green); }
+    .log-box .entry.err { color: var(--red); }
+
+    /* ── Footer ── */
+    .footer {
+      padding: 10px 18px 14px;
+      border-top: 1px solid var(--border);
+    }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div class="logo">
+      <div class="logo-icon">⚡</div>
+      <div>
+        <div class="logo-text">Autopilot</div>
+        <div class="logo-sub">Skillwiz</div>
+      </div>
+    </div>
+    <div style="display: flex; align-items: center; gap: 8px;">
+      <div class="status-badge off" id="statusBadge">IDLE</div>
+      <span class="settings-icon" id="settingsBtn">⚙️</span>
+    </div>
+  </div>
+
+  <div class="body">
+    <div class="warning" id="warningBox">
+      ⚠ Not on a Skillwiz page. Navigate to your course first.
+    </div>
+
+    <div class="section-label">Automation tasks</div>
+
+    <div class="toggle-row active" id="toggle-autoNext" data-key="autoNext">
+      <div class="toggle-info">
+        <div class="toggle-icon">▶</div>
+        <div>
+          <div class="toggle-name">Auto-advance</div>
+          <div class="toggle-desc">Click next lesson automatically</div>
+        </div>
+      </div>
+      <div class="switch"></div>
+    </div>
+
+    <div class="toggle-row active" id="toggle-autoQuiz" data-key="autoQuiz">
+      <div class="toggle-info">
+        <div class="toggle-icon">✓</div>
+        <div>
+          <div class="toggle-name">Auto-answer quiz</div>
+          <div class="toggle-desc">Select & submit MCQ options</div>
+        </div>
+      </div>
+      <div class="switch"></div>
+    </div>
+
+    <div class="toggle-row active" id="toggle-markComplete" data-key="markComplete">
+      <div class="toggle-info">
+        <div class="toggle-icon">🏁</div>
+        <div>
+          <div class="toggle-name">Mark complete</div>
+          <div class="toggle-desc">Auto-click completion button</div>
+        </div>
+      </div>
+      <div class="switch"></div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="delay-row">
+      <div class="delay-label">Step delay</div>
+      <input type="range" class="delay-slider" id="delaySlider" min="500" max="5000" step="500" value="1500">
+      <div class="delay-val" id="delayVal">1.5s</div>
+    </div>
+
+    <button class="main-btn start" id="mainBtn">▶ Start Autopilot</button>
+    <button class="run-once-btn" id="runOnceBtn">Run once on this page</button>
+
+    <div class="log-box" id="logBox">
+      <div>Waiting to start...</div>
+    </div>
+  </div>
+
+  <!-- Settings Panel -->
+  <div class="settings-panel" id="settingsPanel">
+    <div class="settings-content">
+      <div class="settings-header">
+        <div class="settings-title">⚙️ Settings</div>
+        <button class="close-settings" id="closeSettingsBtn">✕</button>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-group-title">AI Integration</div>
+        
+        <div class="toggle-row" id="toggle-useChatGPT" data-key="useChatGPT">
+          <div class="toggle-info">
+            <div class="toggle-icon">🤖</div>
+            <div>
+              <div class="toggle-name">ChatGPT Integration</div>
+              <div class="toggle-desc">Use AI to answer questions intelligently</div>
+            </div>
+          </div>
+          <div class="switch"></div>
+        </div>
+
+        <div class="input-group">
+          <label class="input-label">API Key (sk-...)</label>
+          <input type="password" class="input-text" id="apiKeyInput" placeholder="OpenAI API Key">
+          <div class="toggle-desc" style="margin-top: 6px;">Get one at <a href="https://platform.openai.com/account/api-keys" target="_blank" style="color: var(--green);">platform.openai.com</a></div>
+        </div>
+      </div>
+
+      <div class="settings-group">
+        <div class="settings-group-title">Advanced Options</div>
+        
+        <div class="toggle-row" id="toggle-autoScroll" data-key="autoScroll">
+          <div class="toggle-info">
+            <div class="toggle-icon">📜</div>
+            <div>
+              <div class="toggle-name">Auto-scroll</div>
+              <div class="toggle-desc">Automatically scroll through content</div>
+            </div>
+          </div>
+          <div class="switch"></div>
+        </div>
+
+        <div class="toggle-row" id="toggle-randomizeAnswers" data-key="randomizeAnswers">
+          <div class="toggle-info">
+            <div class="toggle-icon">🎲</div>
+            <div>
+              <div class="toggle-name">Randomize (Fallback)</div>
+              <div class="toggle-desc">Pick random option if no API key</div>
+            </div>
+          </div>
+          <div class="switch"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
