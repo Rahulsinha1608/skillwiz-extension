@@ -87,6 +87,24 @@ function log(msg, isErr = false) {
   console.log(prefix, msg);
 }
 
+// Helper to dispatch richer pointer/mouse events before click
+function dispatchClickEvents(el) {
+  try {
+    // Pointer down/up + mouse events to satisfy listeners that don't react to .click()
+    const pDown = new PointerEvent('pointerdown', { bubbles: true });
+    el.dispatchEvent(pDown);
+    const mDown = new MouseEvent('mousedown', { bubbles: true });
+    el.dispatchEvent(mDown);
+    const mUp = new MouseEvent('mouseup', { bubbles: true });
+    el.dispatchEvent(mUp);
+    const mClick = new MouseEvent('click', { bubbles: true });
+    el.dispatchEvent(mClick);
+  } catch (e) {
+    // Fallback: try the simple click
+    try { el.click(); } catch (_) {}
+  }
+}
+
 // ── Find buttons by text content (more reliable) ───────────
 function findButtonByText(textPatterns) {
   // Include anchors so we detect plain <a class="btn">Check Answer</a>
@@ -311,7 +329,8 @@ async function safeClick(el, delay = 0, preventDefault = false) {
             });
             el.dispatchEvent(clickEvent);
           } else {
-            el.click();
+            // Dispatch richer pointer/mouse events first
+            dispatchClickEvents(el);
           }
           log(`Clicked: ${el.tagName}`);
         } catch (e) {
@@ -505,304 +524,5 @@ async function getChatGPTAnswerFullAutomation(questionData) {
           chrome.storage.local.get(['chatGPTAnswer'], (result) => {
             if (result.chatGPTAnswer) {
               clearInterval(checkInterval);
-              const answer = result.chatGPTAnswer;
 
-              log('Answer received from ChatGPT, switching back...');
-
-              // Switch back to Skillwiz tab via background
-              chrome.runtime.sendMessage({ type: 'SWITCH_TO_TAB', tabId: skillwizTabId }, () => {
-                log('Switched back to Skillwiz tab');
-              });
-
-              // Clean up storage
-              chrome.storage.local.remove(['chatGPTAnswer', 'pendingQuestion', 'skillwizTabId', 'waitingForAnswer']);
-
-              resolve(answer);
-            }
-
-            attempts++;
-            if (attempts > 180) { // 3 minutes timeout
-              clearInterval(checkInterval);
-              log('ChatGPT answer timeout', true);
-
-              // Switch back
-              chrome.runtime.sendMessage({ type: 'SWITCH_TO_TAB', tabId: skillwizTabId }, () => {});
-
-              resolve(null);
-            }
-          });
-        }, 1000);
-      });
-    });
-  });
-}
-
-// ── Mark answer option and submit ─────────────────────────────────
-async function markAnswerAndSubmit(selectedOption, settings) {
-  // Enable navigation prevention
-  preventNavigation = true;
-  
-  // Click the checkbox to select the answer
-  log('Clicking the selected option...');
-  const checkbox = selectedOption.element;
-  
-  // 1) Try clicking associated label or wrapper (preferred for stylized checkboxes)
-  let clickedSelection = false;
-  try {
-    // If checkbox has an id, try label[for="id"]
-    if (checkbox.id) {
-      let labelFor = null;
-      try {
-        labelFor = document.querySelector(`label[for="${CSS.escape(checkbox.id)}"]`);
-      } catch (_) {
-        // CSS.escape may not be available in some contexts; fall back
-        labelFor = document.querySelector(`label[for="${checkbox.id}"]`);
-      }
-      if (labelFor && labelFor.offsetParent !== null) {
-        await safeClick(labelFor, 0);
-        log('Clicked label[for] for checkbox');
-        clickedSelection = true;
-      }
-    }
-
-    // If not clicked yet, check if checkbox is wrapped by a label
-    if (!clickedSelection) {
-      const wrappingLabel = checkbox.closest('label');
-      if (wrappingLabel && wrappingLabel.offsetParent !== null) {
-        await safeClick(wrappingLabel, 0);
-        log('Clicked wrapping label for checkbox');
-        clickedSelection = true;
-      }
-    }
-
-    // If still not clicked, try to click the visible ancestor container (common in custom UIs)
-    if (!clickedSelection) {
-      const container = checkbox.closest('.row.mb-2, .answer, .option, .question-answers > div');
-      if (container && container.offsetParent !== null) {
-        await safeClick(container, 0);
-        log('Clicked container for checkbox');
-        clickedSelection = true;
-      }
-    }
-  } catch (e) {
-    log('Error clicking label/wrapper: ' + e.message, true);
-  }
-
-  // 2) Also set the checked state and fire events to be robust
-  if (checkbox) {
-    try {
-      checkbox.checked = true;
-      checkbox.dispatchEvent(new Event('change', { bubbles: true }));
-      checkbox.dispatchEvent(new Event('input', { bubbles: true }));
-      log('Checkbox checked and events triggered');
-    } catch (e) {
-      log('Failed to set checkbox checked: ' + e.message, true);
-    }
-  }
-
-  // 3) Small wait for UI to react
-  await new Promise(r => setTimeout(r, settings.stepDelay || 800));
-
-  // 4) Find and click the Check/Submit button
-  log('Looking for Check/Submit button...');
-  let checkBtn = findButtonByText(['check answer', '^check$', 'verify', 'submit', '\\bcheck\\b', '\\bsubmit\\b', 'answer']);
-
-  if (checkBtn) {
-    log('Clicking Check/Submit button...');
-    await safeClick(checkBtn, settings.stepDelay || 400);
-    log('Check/Submit button clicked');
-  } else {
-    // 5) If no explicit Check button, poll for Save/Next (auto-submit scenarios)
-    log('Check/Submit button not found - will poll for Save/Next (auto-submit scenarios)');
-    const timeoutMs = 4000;
-    const intervalMs = 500;
-    let elapsed = 0;
-    let saveNextBtn = null;
-
-    while (elapsed < timeoutMs) {
-      // Try Save/Next patterns
-      saveNextBtn = findButtonByText(['save', 'save & next', 'save and next', 'save/next', '^next$', 'continue', 'proceed', 'finish']);
-      if (saveNextBtn) break;
-      // Also look for inputs[type=submit] visible on page
-      const submitInput = Array.from(document.querySelectorAll('input[type="submit"], input[type="button"]')).find(i => {
-        try { return i.offsetParent !== null; } catch(_) { return false; }
-      });
-      if (submitInput) {
-        saveNextBtn = submitInput;
-        break;
-      }
-
-      await new Promise(r => setTimeout(r, intervalMs));
-      elapsed += intervalMs;
-    }
-
-    if (saveNextBtn) {
-      log('Found Save/Next button after polling, clicking...');
-      await safeClick(saveNextBtn, 200);
-    } else {
-      log('No Save/Next found after polling. Attempting fallback submit triggers.');
-      // Fallback: try triggering form submit on enclosing form
-      try {
-        const form = checkbox.closest('form');
-        if (form) {
-          form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
-          log('Dispatched submit event on enclosing form');
-        }
-      } catch (e) {
-        log('Form submit fallback failed: ' + e.message, true);
-      }
-    }
-  }
-
-  // Wait a bit then disable prevention to allow normal navigation
-  await new Promise(r => setTimeout(r, settings.stepDelay || 2000));
-  preventNavigation = false;
-}
-
-// ── Find Save/Next button ─────────────────────────────────
-async function findSaveNextButton(delay = 0) {
-  await new Promise(r => setTimeout(r, delay));
-  
-  const btn = findButtonByText(['save', 'next', 'continue', 'proceed', 'finish']);
-  if (btn) {
-    log(`Found Save/Next button with text: "${btn.textContent.slice(0, 30)}"`);
-    return btn;
-  }
-  
-  return null;
-}
-
-// ── Click next lesson button ───────────────────────────────
-async function clickNext() {
-  const nextSelectors = [
-    'a[aria-label*="Next" i]:not(:disabled)',
-    'button[aria-label*="Next" i]:not(:disabled)',
-    'a.btn-next:not(:disabled)',
-    'button.btn-next:not(:disabled)',
-    '[data-testid="next-button"]',
-    '.next-button',
-    'a[rel="next"]',
-    'button:contains("Next")',
-    '[class*="next"]:not(:disabled)',
-  ];
-
-  // Don't click next if we're in the middle of answering a quiz
-  const hasCheckboxes = document.querySelectorAll('input[type="checkbox"]:not(:disabled)').length > 0;
-  if (hasCheckboxes) {
-    log('Skipping next click - quiz still in progress');
-    return false;
-  }
-
-  const nextBtn = findButtonByText(['next', 'continue', 'proceed']);
-  if (nextBtn) {
-    log('Clicking Next button...');
-    await safeClick(nextBtn, 500);
-    return true;
-  }
-
-  log('Next button not found');
-  return false;
-}
-
-// ── Click mark complete button ──────────────────────────────
-async function clickComplete() {
-  // Try multiple strategies to find the complete button
-  let completeBtn = findButtonByText(['complete', 'finish', 'done', 'mark complete']);
-
-  if (completeBtn) {
-    log('Clicking Complete button...');
-    await safeClick(completeBtn, 500);
-    return true;
-  }
-
-  log('Complete button not found');
-  return false;
-}
-
-// ── Main autopilot loop ───────────────────────────────────
-async function runAutopilot() {
-  const now = Date.now();
-  if (now - lastRunTime < 1000) return; // Rate limit
-  lastRunTime = now;
-
-  if (!autopilotActive || isRunning) return;
-  isRunning = true;
-
-  try {
-    const { autoQuiz, autoNext, markComplete, stepDelay } = autopilotSettings;
-
-    // Check if quiz is present
-    const hasQuiz = document.querySelectorAll('input[type="checkbox"]:not(:disabled)').length > 0;
-
-    // Handle quiz first
-    if (autoQuiz && hasQuiz) {
-      await answerQuiz();
-      await new Promise(r => setTimeout(r, stepDelay || 2000));
-    }
-
-    // Check if we're on a lesson complete page (no interactive content)
-    const isLessonEnd = !hasQuiz && !document.querySelector('video, audio');
-
-    if (autoNext && !hasQuiz) {
-      await clickNext();
-      await new Promise(r => setTimeout(r, stepDelay || 1500));
-    }
-
-    if (markComplete && isLessonEnd) {
-      await clickComplete();
-      await new Promise(r => setTimeout(r, stepDelay || 1000));
-    }
-  } catch (e) {
-    log(`Autopilot error: ${e.message}`, true);
-    console.error(e);
-  } finally {
-    isRunning = false;
-  }
-}
-
-// ── Start mutation observer ───────────────────────────────
-function startObserver() {
-  if (observer) observer.disconnect();
-  observer = new MutationObserver(() => {
-    if (autopilotActive && !isRunning) {
-      runAutopilot();
-    }
-  });
-  observer.observe(document.body, { childList: true, subtree: true });
-  log('Observer started');
-}
-
-// ── Message listener ───────────────────────────────────────
-chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  try {
-    if (msg.type === 'START_AUTOPILOT') {
-      autopilotActive = true;
-      autopilotSettings = msg.settings;
-      log('✓ AUTOPILOT STARTED');
-      startObserver();
-      runAutopilot();
-      sendResponse({ status: 'started' });
-    } else if (msg.type === 'STOP_AUTOPILOT') {
-      autopilotActive = false;
-      if (observer) observer.disconnect();
-      log('Autopilot stopped');
-      sendResponse({ status: 'stopped' });
-    } else if (msg.type === 'RUN_ONCE') {
-      autopilotSettings = msg.settings;
-      runAutopilot();
-      sendResponse({ status: 'ran_once' });
-    } else if (msg.type === 'GET_STATUS') {
-      sendResponse({ active: autopilotActive, settings: autopilotSettings });
-    }
-
-    return true;
-  } catch (e) {
-    console.error('ERROR IN MESSAGE LISTENER:', e);
-    sendResponse({ error: e.message });
-    return true;
-  }
-});
-
-console.log('═══════════════════════════════════════════════════════════');
-console.log('✓ Content script ready');
-console.log('═══════════════════════════════════════════════════════════');
+{
