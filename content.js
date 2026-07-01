@@ -89,7 +89,8 @@ function log(msg, isErr = false) {
 
 // ── Find buttons by text content (more reliable) ───────────
 function findButtonByText(textPatterns) {
-  const allCandidates = Array.from(document.querySelectorAll('button, a[role="button"], [role="button"], input[type="button"], input[type="submit"], input[type="image"]'));
+  // Include anchors so we detect plain <a class="btn">Check Answer</a>
+  const allCandidates = Array.from(document.querySelectorAll('button, a, a[role="button"], [role="button"], input[type="button"], input[type="submit"], input[type="image"]'));
 
   for (const btn of allCandidates) {
     try {
