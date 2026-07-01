@@ -14,6 +14,15 @@ function checkForQuestion() {
     if (result.pendingQuestion) {
       console.log('[Skillwiz Autopilot] Found question:', result.pendingQuestion.slice(0, 60));
 
+      // Register this tab as the ChatGPT tab for reuse
+      const currentTab = await chrome.tabs.getCurrent();
+      if (currentTab) {
+        chrome.runtime.sendMessage({ 
+          type: 'REGISTER_CHATGPT_TAB', 
+          tabId: currentTab.id 
+        });
+      }
+
       await sendQuestionToChatGPT(result.pendingQuestion);
 
       // Clear the question
@@ -24,7 +33,7 @@ function checkForQuestion() {
 
 async function sendQuestionToChatGPT(question) {
   // Wait for ChatGPT to fully load
-  const textarea = await waitForElement('textarea, [contenteditable="true"]');
+  const textarea = await waitForElement('textarea, [contenteditable="true"]', 20000);
 
   if (!textarea) {
     console.log('[Skillwiz Autopilot] Textarea not found after waiting');
@@ -44,20 +53,34 @@ async function sendQuestionToChatGPT(question) {
     textarea.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
+  console.log('[Skillwiz Autopilot] Question set, looking for send button...');
+
   // Wait for the send button to be enabled
-  let sendButton = await waitForElement('button[data-testid="send-button"], button[aria-label*="Send" i], button[aria-label*="send" i]');
+  let sendButton = await waitForElement(
+    'button[data-testid="send-button"], button[aria-label*="Send" i], button[aria-label*="send" i]',
+    10000
+  );
 
   if (!sendButton) {
     // Try to find any button that looks like send
     const buttons = document.querySelectorAll('button');
     for (const btn of buttons) {
+      if (btn.offsetParent === null) continue; // Skip hidden
+      
       const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
-      if (ariaLabel.includes('send') || btn.querySelector('svg')) {
-        const svgPath = btn.querySelector('svg')?.innerHTML || '';
-        if (svgPath.includes('send') || svgPath.includes('Submit')) {
-          sendButton = btn;
-          break;
-        }
+      const title = (btn.getAttribute('title') || '').toLowerCase();
+      
+      if (ariaLabel.includes('send') || title.includes('send')) {
+        sendButton = btn;
+        console.log('[Skillwiz Autopilot] Found send button by aria-label');
+        break;
+      }
+      
+      const svgPath = btn.querySelector('svg')?.innerHTML || '';
+      if (svgPath.includes('send') || svgPath.includes('Submit') || ariaLabel.includes('send')) {
+        sendButton = btn;
+        console.log('[Skillwiz Autopilot] Found send button by SVG');
+        break;
       }
     }
   }
@@ -71,7 +94,7 @@ async function sendQuestionToChatGPT(question) {
   } else {
     console.log('[Skillwiz Autopilot] Send button not found, trying Enter key...');
     // Try pressing Enter as last resort
-    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    textarea.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
     await waitForAnswer();
   }
 }
@@ -94,11 +117,16 @@ async function waitForElement(selector, timeoutMs = 15000) {
 function parseAnswer(text) {
   if (!text) return null;
 
+  // Normalize text
+  const normalized = text.toLowerCase().trim();
+
   const patterns = [
-    // "The answer is 3" or "Answer: 3"
+    // "The answer is 3" or "Answer: 3" or "Option 3"
     /(?:answer|option)\s*(?:is|:)?\s*(\d+)/i,
     // Number followed by period or parenthesis at start: "3. " or "1)"
     /^(\d+)[.\)\s]/m,
+    // "Correct answer: 2"
+    /(?:correct\s+)?answer\s*:?\s*(\d+)/i,
     // Just find a standalone number in context
     /\b(\d+)\b/,
   ];
@@ -119,42 +147,43 @@ async function waitForAnswer() {
   console.log('[Skillwiz Autopilot] Waiting for ChatGPT answer...');
 
   let attempts = 0;
-  const maxAttempts = 90; // 90 seconds timeout
+  const maxAttempts = 120; // 2 minutes timeout
 
   while (attempts < maxAttempts) {
     await new Promise(r => setTimeout(r, 1000));
 
     // Get ChatGPT response messages - try multiple selectors
-    const allMessages = document.querySelectorAll('[data-message-id], div.group, article, [role="presentation"]');
+    const messages = Array.from(document.querySelectorAll(
+      '[data-message-id], div.group.w-full, article, [role="article"], div[class*="message"]'
+    )).filter(el => el.offsetParent !== null);
 
-    for (const msg of allMessages) {
-      const msgId = msg.getAttribute('data-message-id') || msg.getAttribute('id') || msg.textContent?.slice(0, 50);
+    if (messages.length === 0) {
+      attempts++;
+      continue;
+    }
+
+    // Process messages in reverse order (newest first)
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      const msgId = msg.getAttribute('data-message-id') || msg.getAttribute('id') || `msg-${i}`;
 
       // Skip if already processed
       if (processedMessageIds.has(msgId)) continue;
 
-      const text = msg.innerText || msg.textContent || '';
+      const text = (msg.innerText || msg.textContent || '').trim();
 
-      // Only process if it looks like an answer (not user question)
-      // Assistant messages typically have longer text and don't contain "Options:" at start
-      if (text && text.length > 30 && !text.includes('Options:')) {
-        // Additional check: this should be the newest message
-        const allMsgs = Array.from(allMessages);
-        const msgIndex = allMsgs.indexOf(msg);
-
-        // Only consider messages that appear after potential user messages
-        if (msgIndex >= allMsgs.length / 2 || allMsgs.length <= 2) {
+      // Only process if it looks like an answer (not empty and not too short)
+      if (text && text.length > 10) {
+        // Try to parse answer from this message
+        const answerNum = parseAnswer(text);
+        
+        if (answerNum !== null) {
           processedMessageIds.add(msgId);
-
-          console.log('[Skillwiz Autopilot] Got answer:', text.slice(0, 100));
-
-          // Parse the answer number
-          const answerNum = parseAnswer(text);
-          const answerToStore = answerNum ? `${answerNum}` : text;
+          console.log('[Skillwiz Autopilot] Got answer:', answerNum, 'from text:', text.slice(0, 100));
 
           // Store answer for Skillwiz to read
-          chrome.storage.local.set({ chatGPTAnswer: answerToStore }, () => {
-            console.log('[Skillwiz Autopilot] Answer stored');
+          chrome.storage.local.set({ chatGPTAnswer: String(answerNum) }, () => {
+            console.log('[Skillwiz Autopilot] Answer stored:', answerNum);
           });
 
           return;
@@ -175,5 +204,5 @@ if (document.readyState === 'loading') {
   checkForQuestion();
 }
 
-// Also check every 3 seconds
-setInterval(checkForQuestion, 3000);
+// Also check every 2 seconds
+setInterval(checkForQuestion, 2000);

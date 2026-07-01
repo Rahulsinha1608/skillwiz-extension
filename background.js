@@ -1,4 +1,6 @@
 // background.js — service worker
+let chatGPTTabId = null; // Store the ChatGPT tab ID for reuse
+
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.set({
     autopilotActive: false,
@@ -16,37 +18,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     // Store question in storage for ChatGPT to read
     chrome.storage.local.set({ pendingQuestion: question }, () => {
-      // Force opening ChatGPT in Chrome browser, not desktop app
-      const chatUrl = 'https://chatgpt.com/?model=gpt-4&utm_source=chrome_extension';
-
-      chrome.tabs.create(
-        {
-          url: chatUrl,
-          active: false,
-          pinned: false,
-        },
-        (tab) => {
-          if (chrome.runtime.lastError) {
-            console.log('Failed to open ChatGPT tab:', chrome.runtime.lastError.message);
-            const altUrl = 'https://chat.openai.com/?model=gpt-4&utm_source=chrome_extension';
-            chrome.tabs.create(
-              { url: altUrl, active: false },
-              (tab2) => {
-                if (chrome.runtime.lastError) {
-                  sendResponse({ success: false, error: chrome.runtime.lastError.message });
-                } else {
-                  console.log('ChatGPT tab opened (fallback):', tab2.id);
-                  sendResponse({ success: true, tabId: tab2.id });
-                }
-              }
-            );
+      // Check if we already have a ChatGPT tab open
+      if (chatGPTTabId) {
+        chrome.tabs.get(chatGPTTabId, (tab) => {
+          if (tab && tab.url && (tab.url.includes('chatgpt.com') || tab.url.includes('chat.openai.com'))) {
+            // Tab still exists and is a ChatGPT tab, reuse it
+            console.log('Reusing existing ChatGPT tab:', chatGPTTabId);
+            chrome.tabs.update(chatGPTTabId, { active: true }, () => {
+              sendResponse({ success: true, tabId: chatGPTTabId });
+            });
             return;
+          } else {
+            // Tab was closed or navigated away, reset
+            chatGPTTabId = null;
+            openNewChatGPTTab(sendResponse);
           }
-
-          console.log('ChatGPT tab opened:', tab.id);
-          sendResponse({ success: true, tabId: tab.id });
-        }
-      );
+        });
+      } else {
+        // No existing tab, open a new one
+        openNewChatGPTTab(sendResponse);
+      }
     });
 
     return true;
@@ -87,4 +78,48 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true;
   }
+
+  // NEW: Store ChatGPT tab ID for reuse
+  if (message.type === 'REGISTER_CHATGPT_TAB') {
+    chatGPTTabId = message.tabId;
+    console.log('ChatGPT tab registered for reuse:', chatGPTTabId);
+    sendResponse({ success: true });
+    return true;
+  }
 });
+
+// Helper function to open a new ChatGPT tab
+function openNewChatGPTTab(sendResponse) {
+  const chatUrl = 'https://chatgpt.com/?model=gpt-4&utm_source=chrome_extension';
+
+  chrome.tabs.create(
+    {
+      url: chatUrl,
+      active: false,
+      pinned: false,
+    },
+    (tab) => {
+      if (chrome.runtime.lastError) {
+        console.log('Failed to open ChatGPT tab:', chrome.runtime.lastError.message);
+        const altUrl = 'https://chat.openai.com/?model=gpt-4&utm_source=chrome_extension';
+        chrome.tabs.create(
+          { url: altUrl, active: false },
+          (tab2) => {
+            if (chrome.runtime.lastError) {
+              sendResponse({ success: false, error: chrome.runtime.lastError.message });
+            } else {
+              chatGPTTabId = tab2.id;
+              console.log('ChatGPT tab opened (fallback):', tab2.id);
+              sendResponse({ success: true, tabId: tab2.id });
+            }
+          }
+        );
+        return;
+      }
+
+      chatGPTTabId = tab.id;
+      console.log('ChatGPT tab opened:', tab.id);
+      sendResponse({ success: true, tabId: tab.id });
+    }
+  );
+}
