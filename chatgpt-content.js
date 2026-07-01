@@ -165,7 +165,7 @@ function parseAnswer(text) {
     // "The answer is 3" or "Answer: 3" or "Option 3"
     /(?:answer|option)\s*(?:is|:)?\s*(\d+)/i,
     // Number followed by period or parenthesis at start: "3. " or "1)"
-    /^(\d+)[.\)\s]/m,
+    /^(\d+)[\.\)\s]/m,
     // "Correct answer: 2"
     /(?:correct\s+)?answer\s*:?\s*(\d+)/i,
     // "Choose 2" or "Select option 3"

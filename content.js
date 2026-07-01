@@ -87,6 +87,28 @@ function log(msg, isErr = false) {
   console.log(prefix, msg);
 }
 
+// ── Find buttons by text content (more reliable) ───────────
+function findButtonByText(textPatterns) {
+  const allButtons = Array.from(document.querySelectorAll('button, a[role="button"], [role="button"]'));
+  
+  for (const btn of allButtons) {
+    if (btn.offsetParent === null || btn.disabled) continue;
+    
+    const text = (btn.textContent || btn.innerText || '').toLowerCase().trim();
+    const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+    const title = (btn.getAttribute('title') || '').toLowerCase();
+    
+    for (const pattern of textPatterns) {
+      const regex = new RegExp(pattern, 'i');
+      if (regex.test(text) || regex.test(ariaLabel) || regex.test(title)) {
+        return btn;
+      }
+    }
+  }
+  
+  return null;
+}
+
 // ── Extract question and options ───────────────────────────
 function extractQuestion() {
   let questionText = '';
@@ -212,7 +234,7 @@ function extractQuestion() {
       }
     }
 
-    // Strategy 4: Get parent's text content
+    // Strategy 5: Get parent's text content
     if (!answerText && checkbox.parentElement) {
       const parent = checkbox.parentElement;
       const text = parent.innerText?.trim() || parent.textContent?.trim() || '';
@@ -295,7 +317,7 @@ function parseAnswerFromResponse(response, optionCount) {
   // Handle text responses with patterns
   const patterns = [
     /(?:answer|option)\s*(?:is|:)?\s*(\d+)/i,
-    /^(\d+)[.\)\s]/m,
+    /^(\d+)[\.\)\s]/m,
   ];
 
   for (const pattern of patterns) {
@@ -466,7 +488,7 @@ async function getChatGPTAnswerFullAutomation(questionData) {
               clearInterval(checkInterval);
               const answer = result.chatGPTAnswer;
 
-              log('Answer received from ChatGPT, closing ChatGPT tab and switching back...');
+              log('Answer received from ChatGPT, switching back...');
 
               // Switch back to Skillwiz tab via background
               chrome.runtime.sendMessage({ type: 'SWITCH_TO_TAB', tabId: skillwizTabId }, () => {
@@ -519,41 +541,10 @@ async function markAnswerAndSubmit(selectedOption, settings) {
   // Wait for the page to register the selection
   await new Promise(r => setTimeout(r, settings.stepDelay || 800));
 
-  // Find and click the Check Answer button
+  // Find and click the Check Answer button - improved detection
   log('Looking for Check Answer button...');
   
-  let checkBtn = null;
-  
-  // Strategy 1: Look for buttons by text content (most reliable)
-  const allButtons = Array.from(document.querySelectorAll('button, a, [role="button"]'))
-    .filter(b => b.offsetParent !== null);
-  
-  for (const btn of allButtons) {
-    const text = (btn.textContent || btn.innerText || '').toLowerCase().trim();
-    // Look for check answer button specifically
-    if (text.includes('check') || text === 'check answer' || text === 'verify' || text.includes('submit')) {
-      // Make sure it's not disabled
-      if (!btn.disabled && !btn.classList.contains('disabled')) {
-        checkBtn = btn;
-        log(`Found Check Answer button with text: "${text}"`);
-        break;
-      }
-    }
-  }
-
-  // Strategy 2: Try common selectors
-  if (!checkBtn) {
-    const checkSelectors = [
-      'a.btn.btn-primary:not(:disabled)',
-      'button.btn-primary:not(:disabled)',
-      'a.btn-primary:not(:disabled)',
-      'button[type="submit"]:not(:disabled)',
-      '[data-testid="check-answer"]',
-      'button.btn-success:not(:disabled)',
-      'a.btn-success:not(:disabled)',
-    ];
-    checkBtn = findElement(checkSelectors);
-  }
+  let checkBtn = findButtonByText(['check', 'verify', 'submit', 'answer']);
 
   if (checkBtn) {
     log('Clicking Check Answer button...');
@@ -582,17 +573,10 @@ async function markAnswerAndSubmit(selectedOption, settings) {
 async function findSaveNextButton(delay = 0) {
   await new Promise(r => setTimeout(r, delay));
   
-  const allButtons = Array.from(document.querySelectorAll('button, a, [role="button"]'))
-    .filter(b => b.offsetParent !== null);
-  
-  for (const btn of allButtons) {
-    const text = (btn.textContent || btn.innerText || '').toLowerCase().trim();
-    if (text.includes('save') || text.includes('next') || text.includes('continue')) {
-      if (!btn.disabled && !btn.classList.contains('disabled')) {
-        log(`Found Save/Next button with text: "${text}"`);
-        return btn;
-      }
-    }
+  const btn = findButtonByText(['save', 'next', 'continue', 'proceed', 'finish']);
+  if (btn) {
+    log(`Found Save/Next button with text: "${btn.textContent.slice(0, 30)}"`);
+    return btn;
   }
   
   return null;
@@ -619,7 +603,7 @@ async function clickNext() {
     return false;
   }
 
-  const nextBtn = findElement(nextSelectors);
+  const nextBtn = findButtonByText(['next', 'continue', 'proceed']);
   if (nextBtn) {
     log('Clicking Next button...');
     await safeClick(nextBtn, 500);
@@ -633,59 +617,7 @@ async function clickNext() {
 // ── Click mark complete button ──────────────────────────────
 async function clickComplete() {
   // Try multiple strategies to find the complete button
-  let completeBtn = null;
-
-  // Strategy 1: Look for buttons with complete-related text
-  const allButtons = Array.from(document.querySelectorAll('button, a, [role="button"]'));
-  for (const btn of allButtons) {
-    if (btn.offsetParent === null) continue; // Skip hidden elements
-    
-    const text = (btn.innerText || btn.textContent || '').toLowerCase();
-    if (text.includes('complete') || text.includes('finish') || text.includes('done')) {
-      completeBtn = btn;
-      log(`Found complete button with text: "${text}"`);
-      break;
-    }
-  }
-
-  // Strategy 2: Look for buttons with specific data attributes or classes
-  if (!completeBtn) {
-    const selectors = [
-      '[data-testid="complete-button"]',
-      '[data-testid="mark-complete"]',
-      '.complete-btn',
-      '.btn-complete',
-      '.finish-btn',
-      'button[class*="complete"]',
-      'button[class*="finish"]',
-      'a[class*="complete"]',
-    ];
-
-    for (const sel of selectors) {
-      try {
-        completeBtn = document.querySelector(sel);
-        if (completeBtn && completeBtn.offsetParent !== null) {
-          log(`Found complete button with selector: "${sel}"`);
-          break;
-        }
-      } catch (_) {}
-    }
-  }
-
-  // Strategy 3: Look for any button that appears at the end of the page
-  if (!completeBtn) {
-    const visibleButtons = allButtons.filter(btn => btn.offsetParent !== null);
-    if (visibleButtons.length > 0) {
-      const lastBtn = visibleButtons[visibleButtons.length - 1];
-      const text = (lastBtn.innerText || lastBtn.textContent || '').toLowerCase();
-      
-      // If the last button is not "next" and not a navigation button, try it
-      if (!text.includes('next') && !text.includes('previous') && !text.includes('back')) {
-        completeBtn = lastBtn;
-        log(`Using last visible button as complete: "${text}"`);
-      }
-    }
-  }
+  let completeBtn = findButtonByText(['complete', 'finish', 'done', 'mark complete']);
 
   if (completeBtn) {
     log('Clicking Complete button...');
